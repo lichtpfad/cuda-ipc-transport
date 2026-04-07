@@ -738,19 +738,130 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
     ]
 
 
-def build_comp_teardown_batch(parent: str) -> list:
-    """Removes the bridge COMP (destroying it removes all children)."""
-    bridge_path = f"{parent}/{COMP_BRIDGE}"
+def make_facade_pulse_code() -> str:
+    """Generates Par Execute DAT code that forwards Start/Stop from facade to sd_controller."""
+    return """def onValueChange(par, prev):
+    ctrl = op('sd_controller')
+    if ctrl is None:
+        return
+    if par.name == 'Start':
+        ctrl.par.Start.pulse()
+    elif par.name == 'Stop':
+        ctrl.par.Stop.pulse()
+"""
+
+
+def build_comp_batch(args) -> list:
+    """Orchestrator for --mode comp. Creates ml_bridge outer COMP containing
+    cuda_ipc_bridge and sd_controller, with facade params and I/O proxying."""
+
+    outer = f"{PARENT}/{COMP_OUTER}"
+    bridge_path = f"{outer}/{COMP_BRIDGE}"
+    pulse_code = make_facade_pulse_code()
+
+    cmds = []
+
+    # ── 1. Create ml_bridge containerCOMP + facade params ────────────────────
+    cmds.append({
+        "code": (
+            "n = op('{parent}').create(containerCOMP, '{name}')\n"
+            "page = n.appendCustomPage('ML Bridge')\n"
+            "page.appendStr('Channelprefix', label='Channel Prefix')\n"
+            "n.par.Channelprefix.val = '{prefix}'\n"
+            "page.appendStr('Venvpath', label='Venv Path')\n"
+            "n.par.Venvpath.val = ''\n"
+            "page.appendPulse('Start', label='Start')\n"
+            "page.appendPulse('Stop', label='Stop')\n"
+            "_result = n.path"
+        ).format(parent=PARENT, name=COMP_OUTER, prefix=args.prefix)
+    })
+
+    # ── 2. Build cuda_ipc_bridge inside ml_bridge ─────────────────────────────
+    cmds.extend(build_bridge_batch(
+        parent=outer,
+        pkg_path=CUDA_PKG_PATH,
+        prefix=args.prefix,
+        osc_port=args.osc_port,
+        width=args.width,
+        height=args.height,
+    ))
+
+    # ── 3. Build sd_controller inside ml_bridge ───────────────────────────────
+    cmds.extend(build_controller_batch(
+        parent=outer,
+        bridge_path=bridge_path,
+    ))
+
+    # ── 4. Bind facade Channelprefix -> bridge Channelprefix ──────────────────
+    cmds.append({
+        "code": (
+            "op('{bridge_path}').par.Channelprefix.expr = \"parent().par.Channelprefix\"\n"
+            "_result = 'bound Channelprefix'"
+        ).format(bridge_path=bridge_path)
+    })
+
+    # ── 5. Bind facade Venvpath -> controller Venvpath ────────────────────────
+    cmds.append({
+        "code": (
+            "op('{ctrl_path}').par.Venvpath.expr = \"parent().par.Venvpath\"\n"
+            "_result = 'bound Venvpath'"
+        ).format(ctrl_path=f"{outer}/{COMP_CONTROLLER}")
+    })
+
+    # ── 6. Facade pulse forwarder (Par Execute DAT at ml_bridge level) ────────
+    cmds.append({
+        "code": (
+            "code = {code}\n"
+            "n = op('{outer}').create(parameterexecuteDAT, 'facade_pulse')\n"
+            "n.text = code\n"
+            "n.par.active = 1\n"
+            "_result = n.path"
+        ).format(code=json.dumps(pulse_code), outer=outer)
+    })
+
+    # ── 7. Create 2x inTOP at ml_bridge level ─────────────────────────────────
+    cmds.append({
+        "code": (
+            "n1 = op('{outer}').create(inTOP, 'in_image')\n"
+            "n2 = op('{outer}').create(inTOP, 'in_depth')\n"
+            "_result = n1.path + ', ' + n2.path"
+        ).format(outer=outer)
+    })
+
+    # ── 8. Wire ml_bridge inTOPs -> bridge inTOPs ─────────────────────────────
+    cmds.append({
+        "code": (
+            "op('{bridge_path}/in_image').inputConnectors[0].connect(op('{outer}/in_image'))\n"
+            "op('{bridge_path}/in_depth').inputConnectors[0].connect(op('{outer}/in_depth'))\n"
+            "_result = 'wired inTOPs'"
+        ).format(bridge_path=bridge_path, outer=outer)
+    })
+
+    # ── 9. Create outTOP at ml_bridge level wired from bridge out_result ──────
+    cmds.append({
+        "code": (
+            "o = op('{outer}').create(outTOP, 'out_result')\n"
+            "o.inputConnectors[0].connect(op('{bridge_path}/out_result'))\n"
+            "_result = o.path"
+        ).format(outer=outer, bridge_path=bridge_path)
+    })
+
+    return cmds
+
+
+def build_comp_teardown_batch() -> list:
+    """Removes the ml_bridge outer COMP (destroying it removes all children)."""
+    outer_path = f"{PARENT}/{COMP_OUTER}"
     return [
         {
             "code": (
-                "n = op('{bridge_path}')\n"
+                "n = op('{outer_path}')\n"
                 "if n:\n"
                 "    n.destroy()\n"
-                "    _result = 'removed: {bridge_path}'\n"
+                "    _result = 'removed: {outer_path}'\n"
                 "else:\n"
-                "    _result = 'not found: {bridge_path}'"
-            ).format(bridge_path=bridge_path)
+                "    _result = 'not found: {outer_path}'"
+            ).format(outer_path=outer_path)
         }
     ]
 
@@ -960,10 +1071,10 @@ def main():
 
     if args.teardown:
         if args.mode == "comp":
-            print("[teardown] removing bridge COMP...")
-            batch = build_comp_teardown_batch(PARENT)
+            print(f"[teardown] removing {PARENT}/{COMP_OUTER}...")
+            batch = build_comp_teardown_batch()
         else:
-            print("[teardown] removing nodes...")
+            print("[teardown] removing flat nodes...")
             batch = build_teardown_batch()
     elif args.mode == "flat":
         print(f"[setup] flat mode")
@@ -977,18 +1088,12 @@ def main():
             import_height=args.height,
         )
     elif args.mode == "comp":
-        print(f"[setup] comp mode")
-        print(f"  bridge: {PARENT}/{COMP_BRIDGE}")
+        print(f"[setup] comp mode — {PARENT}/{COMP_OUTER}")
+        print(f"  bridge: {PARENT}/{COMP_OUTER}/{COMP_BRIDGE}")
+        print(f"  controller: {PARENT}/{COMP_OUTER}/{COMP_CONTROLLER}")
         print(f"  prefix: '{args.prefix}', osc_port: {args.osc_port}")
         print(f"  resolution: {args.width}x{args.height}")
-        batch = build_bridge_batch(
-            parent=PARENT,
-            pkg_path=CUDA_PKG_PATH,
-            prefix=args.prefix,
-            osc_port=args.osc_port,
-            width=args.width,
-            height=args.height,
-        )
+        batch = build_comp_batch(args)
 
     ok = run_batch(batch, args.td_port)
     sys.exit(0 if ok else 1)
