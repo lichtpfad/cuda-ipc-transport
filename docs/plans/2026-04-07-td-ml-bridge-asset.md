@@ -320,8 +320,24 @@ class TestOSCStatusSends:
         time.sleep(0.5)
         sock.close()
         t.join(timeout=3)
-        # At least 3 messages: connected(1), frame(10), connected(0)
-        assert len(received) >= 3
+        # Decode OSC packets and verify addresses + values
+        from pythonosc.osc_message import OscMessage
+        messages = []
+        for raw in received:
+            try:
+                msg = OscMessage(raw)
+                messages.append((msg.address, msg.params))
+            except Exception:
+                pass
+        addrs = [m[0] for m in messages]
+        assert "/transport/connected" in addrs, f"Missing /transport/connected in {addrs}"
+        assert "/transport/frame" in addrs, f"Missing /transport/frame in {addrs}"
+        # Verify values
+        connected_msgs = [m for m in messages if m[0] == "/transport/connected"]
+        assert any(m[1] == [1] for m in connected_msgs), "connected(1) not found"
+        assert any(m[1] == [0] for m in connected_msgs), "connected(0) not found (shutdown)"
+        frame_msgs = [m for m in messages if m[0] == "/transport/frame"]
+        assert any(m[1] == [10] for m in frame_msgs), "frame(10) not found"
 ```
 
 ### Step 2.4: Verify
@@ -413,16 +429,18 @@ def onFrameStart(frame):
             if _exporter is not None:
                 _exporter.Cleanup()
 
-            class _FC:
-                name = 'exporter_{input_name}'
-                class par:
-                    class Channelname:
-                        _ch = channel
-                        @staticmethod
-                        def eval():
-                            return _FC.par.Channelname._ch
+            def _make_fc(ch_name):
+                class _FC:
+                    name = 'exporter_{input_name}'
+                    class par:
+                        class Channelname:
+                            _val = ch_name
+                            @staticmethod
+                            def eval():
+                                return _FC.par.Channelname._val
+                return _FC()
 
-            _exporter = TDCUDAIPCExporter(_FC())
+            _exporter = TDCUDAIPCExporter(_make_fc(channel))
             _last_channel = channel
             debug('[bridge] exporter init: ' + channel)
 
@@ -497,7 +515,7 @@ Batch command sequence (each is a `{"code": ...}` dict):
 
 ```bash
 cd C:/dev/cuda
-python scripts/td_setup.py --mode comp --td-port 9955
+.venv/Scripts/python scripts/td_setup.py --mode comp --td-port 9955
 ```
 
 Expected: `[OK] N commands, Xms`. In TD: `/project1/ml_bridge/cuda_ipc_bridge` COMP with all internal nodes.
@@ -524,8 +542,8 @@ The generated `SDControllerExt` class must have:
   - Reads `self.ownerComp.par.Venvpath`, `.Module`, `.Moduleargs`
   - Gets prefix and osc_port from bridge: `op(bridge_path).par.Channelprefix/Statusoscport`
   - If Venvpath empty, uses system `python`; otherwise `{venv}/Scripts/python`
-  - Command: `{python} -m {module} --channel-prefix {prefix} --osc-status-port {osc_port} {args}`
-  - Uses `shell=True`, `CREATE_NEW_PROCESS_GROUP` creationflags
+  - Command as list: `[python, '-m', module, '--channel-prefix', prefix, '--osc-status-port', str(osc_port)] + shlex.split(args)`
+  - Uses `shell=False`, `CREATE_NEW_PROCESS_GROUP` creationflags (avoids injection risk and quoting issues on Windows)
   - Guards against double-start: checks `self._process.poll() is None`
 - `Stop(self)`: `terminate()` then `wait(timeout=5)` then `kill()` if needed
 - `IsRunning(self)`: returns bool
@@ -617,13 +635,13 @@ Batch command sequence:
 
 ```bash
 cd C:/dev/cuda
-python scripts/td_setup.py --mode comp --td-port 9955
+.venv/Scripts/python scripts/td_setup.py --mode comp --td-port 9955
 ```
 
 Expected: `/project1/ml_bridge` with facade params. Pressing Start launches harness. Pressing Stop terminates it.
 
 ```bash
-python scripts/td_setup.py --mode comp --teardown --td-port 9955
+.venv/Scripts/python scripts/td_setup.py --mode comp --teardown --td-port 9955
 ```
 
 Expected: ml_bridge removed. Re-run setup is idempotent.
@@ -653,16 +671,16 @@ Key functions:
 
 Usage:
 ```bash
-python scripts/test_smoke.py                          # harness + OSC only
-python scripts/test_smoke.py --td-port 9955           # with TD setup first
-python scripts/test_smoke.py --prefix custom_test     # custom prefix
+.venv/Scripts/python scripts/test_smoke.py                          # harness + OSC only
+.venv/Scripts/python scripts/test_smoke.py --td-port 9955           # with TD setup first
+.venv/Scripts/python scripts/test_smoke.py --prefix custom_test     # custom prefix
 ```
 
 ### Step 6.2: Verify
 
 ```bash
 cd C:/dev/cuda
-.venv/Scripts/python scripts/test_smoke.py --osc-port 17201 --prefix smoketest
+.venv/Scripts/.venv/Scripts/python scripts/test_smoke.py --osc-port 17201 --prefix smoketest
 ```
 
 Expected (with CUDA): all checks pass (OSC connected, 30 frames, clean exit).
@@ -674,7 +692,7 @@ Expected (without CUDA): harness exits with code 1 (sender init fails). Acceptab
 
 ## Execution Notes
 
-1. **Task ordering:** Tasks 1-2 modify `harness.py` (independent, can run in parallel). Tasks 3-5 modify `td_setup.py` (sequential: bridge -> controller -> outer). Task 6 depends on Tasks 1-2.
+1. **Task ordering:** Tasks 1-2 both modify `harness.py` — execute sequentially (Task 1 first, then Task 2 on top). Tasks 3-5 modify `td_setup.py` (sequential: bridge -> controller -> outer). Task 6 depends on all previous tasks.
 
 2. **Testing without TD:** Tasks 1, 2, 6 are testable without TouchDesigner. Tasks 3-5 require a running TD instance with h2t connected.
 
