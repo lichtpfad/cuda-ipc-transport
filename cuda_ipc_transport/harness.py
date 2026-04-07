@@ -11,6 +11,17 @@ from .sources.file import FileSource
 from .sources.camera import CameraSource
 
 
+def _resolve_channel(channel: str, channel_prefix: str = None) -> str:
+    """Resolve effective channel name from args.
+
+    --channel-prefix takes priority: creates {prefix}_result.
+    --channel is backward-compatible literal name.
+    """
+    if channel_prefix:
+        return f"{channel_prefix}_result"
+    return channel
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="cuda_ipc_transport",
@@ -20,6 +31,9 @@ def main(argv=None):
                         help="Frame source (default: test)")
     parser.add_argument("--channel", default="cuda_ipc_test",
                         help="SharedMemory channel name (default: cuda_ipc_test)")
+    parser.add_argument("--channel-prefix", default=None,
+                        help="Channel prefix. Creates {prefix}_result as send channel. "
+                             "Overrides --channel when set.")
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=512)
     parser.add_argument("--fps", type=int, default=30)
@@ -28,6 +42,10 @@ def main(argv=None):
     parser.add_argument("--file", default=None,
                         help="Path for --source file")
     args = parser.parse_args(argv)
+
+    if args.channel_prefix and args.channel != "cuda_ipc_test":
+        print(f"[harness] WARNING: --channel-prefix overrides --channel", file=sys.stderr)
+    effective_channel = _resolve_channel(args.channel, args.channel_prefix)
 
     if args.source == "test":
         source = TestPatternSource(args.width, args.height, args.fps)
@@ -39,14 +57,14 @@ def main(argv=None):
     else:
         source = CameraSource(0, args.width, args.height)
 
-    channel = CUDAIPCChannel(args.channel, args.width, args.height)
+    channel = CUDAIPCChannel(effective_channel, args.width, args.height)
     sender = CUDAIPCSender(channel)
 
     if not sender.initialize():
         print("ERROR: sender.initialize() failed — is CUDA available?", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[harness] Sending '{args.source}' -> channel '{args.channel}' at {args.fps} fps")
+    print(f"[harness] Sending '{args.source}' -> channel '{effective_channel}' at {args.fps} fps")
     print(f"[harness] {args.width}x{args.height} | Press Ctrl+C to stop")
 
     running = [True]
