@@ -662,6 +662,9 @@ def make_controller_pulse_code() -> str:
     unreliable when set up via Python API in TD 2025).
     """
     return """def onValueChange(par, prev):
+    return
+
+def onPulse(par):
     if par.name == 'Start':
         mod('process_mgr').start(parent())
     elif par.name == 'Stop':
@@ -717,6 +720,8 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
                 "n = op('{controller_path}').create(parameterexecuteDAT, 'pulse_handler')\n"
                 "n.text = code\n"
                 "n.par.active = 1\n"
+                "n.par.op = op('{controller_path}')\n"
+                "n.par.pars = 'Start Stop'\n"
                 "_result = n.path"
             ).format(
                 code=json.dumps(pulse_code),
@@ -729,6 +734,9 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
 def make_facade_pulse_code() -> str:
     """Generates Par Execute DAT code that forwards Start/Stop from facade to sd_controller."""
     return """def onValueChange(par, prev):
+    return
+
+def onPulse(par):
     ctrl = op('sd_controller')
     if ctrl is None:
         return
@@ -803,6 +811,8 @@ def build_comp_batch(args) -> list:
             "n = op('{outer}').create(parameterexecuteDAT, 'facade_pulse')\n"
             "n.text = code\n"
             "n.par.active = 1\n"
+            "n.par.op = op('{outer}')\n"
+            "n.par.pars = 'Start Stop'\n"
             "_result = n.path"
         ).format(code=json.dumps(pulse_code), outer=outer)
     })
