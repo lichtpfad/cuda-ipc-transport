@@ -62,6 +62,7 @@ def _get_channel_name(scriptOp) -> str:
 
 def _get_reader(scriptOp):
     """Get or create reader for the operator's channel."""
+    global _USE_PACKAGE
     state = _get_state(scriptOp)
 
     if state.reader is not None:
@@ -73,12 +74,13 @@ def _get_reader(scriptOp):
     if _USE_PACKAGE and _CUDAIPCReceiver is not None:
         # Use package classes
         try:
-            state.reader = _CUDAIPCReceiver(channel)
-            state.reader.connect()
+            reader = _CUDAIPCReceiver(channel)
+            reader.connect()
+            state.reader = reader
             return state.reader
         except Exception as e:
             try:
-                debug(f"[importer] Package import failed: {e}, falling back to mod()")  # noqa: F821
+                debug(f"[importer] Package reader failed: {e}, falling back to mod()")  # noqa: F821
             except NameError:
                 pass
             _USE_PACKAGE = False
