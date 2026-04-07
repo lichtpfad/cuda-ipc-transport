@@ -11,3 +11,9 @@ dependencies = ["numpy", "opencv-python"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cuda_ipc_transport*"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not cuda' --ignore=tests/test_integration.py"
+markers = [
+    "cuda: mark test as requiring CUDA GPU (skip if not available)",
+]
