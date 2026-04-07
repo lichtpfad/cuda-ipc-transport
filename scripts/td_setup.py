@@ -585,6 +585,159 @@ def build_bridge_batch(parent: str, pkg_path: str, prefix: str,
     ]
 
 
+# ── Controller COMP code generators ──────────────────────────────────────────
+
+def make_controller_extension(bridge_path: str) -> str:
+    """Generates SDControllerExt TD Extension class as a Python string.
+
+    Args:
+        bridge_path: absolute TD path to bridge COMP (e.g. '/project1/cuda_ipc_bridge')
+    """
+    return f"""import subprocess
+import shlex
+
+class SDControllerExt:
+    def __init__(self, ownerComp):
+        self.ownerComp = ownerComp
+        self._process = None
+
+    def Start(self):
+        if self._process is not None and self._process.poll() is None:
+            debug('[sd_controller] already running (PID={{}})'.format(self._process.pid))
+            return
+
+        venv = self.ownerComp.par.Venvpath.eval()
+        module = self.ownerComp.par.Module.eval()
+        args_str = self.ownerComp.par.Moduleargs.eval()
+
+        # Get prefix and osc port from bridge
+        bridge = op('{bridge_path}')
+        prefix = bridge.par.Channelprefix.eval() if bridge else 'ml'
+        osc_port = str(int(bridge.par.Statusoscport.eval())) if bridge else '7001'
+
+        if venv:
+            python = venv.replace('\\\\\\\\', '/') + '/Scripts/python'
+        else:
+            python = 'python'
+
+        cmd = [python, '-m', module, '--channel-prefix', prefix, '--osc-status-port', osc_port]
+        if args_str:
+            cmd += shlex.split(args_str)
+
+        try:
+            import sys as _sys
+            self._process = subprocess.Popen(
+                cmd,
+                shell=False,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                stdout=_sys.stdout,
+                stderr=_sys.stderr,
+            )
+            debug('[sd_controller] started PID={{}} cmd={{}}'.format(self._process.pid, ' '.join(cmd)))
+        except Exception as e:
+            debug('[sd_controller] start failed: {{}}'.format(e))
+
+    def Stop(self):
+        if self._process is None:
+            return
+        if self._process.poll() is not None:
+            debug('[sd_controller] process already exited: {{}}'.format(self._process.returncode))
+            self._process = None
+            return
+        try:
+            self._process.terminate()
+            self._process.wait(timeout=5)
+            debug('[sd_controller] stopped (exit={{}})'.format(self._process.returncode))
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            debug('[sd_controller] killed (timeout)')
+        self._process = None
+
+    def IsRunning(self):
+        return self._process is not None and self._process.poll() is None
+
+    def Destroy(self):
+        self.Stop()
+"""
+
+
+def make_controller_pulse_code() -> str:
+    """Generates Par Execute DAT code for Start/Stop pulse handling."""
+    return """def onValueChange(par, prev):
+    if par.name == 'Start':
+        par.owner.ext.SDControllerExt.Start()
+    elif par.name == 'Stop':
+        par.owner.ext.SDControllerExt.Stop()
+"""
+
+
+def build_controller_batch(parent: str, bridge_path: str) -> list:
+    """Returns h2t batch commands to create sd_controller COMP.
+
+    Args:
+        parent: TD path where sd_controller is created (e.g. '/project1')
+        bridge_path: TD path to cuda_ipc_bridge COMP (for prefix/port reads)
+    """
+    controller_path = f"{parent}/{COMP_CONTROLLER}"
+    ext_code = make_controller_extension(bridge_path)
+    pulse_code = make_controller_pulse_code()
+
+    return [
+        # ── A. Create containerCOMP + custom params ───────────────────────
+        {
+            "code": (
+                "n = op('{parent}').create(containerCOMP, '{name}')\n"
+                "page = n.appendCustomPage('SD Controller')\n"
+                "page.appendStr('Venvpath', label='Venv Path')\n"
+                "page.appendStr('Module', label='Module')\n"
+                "n.par.Module.val = 'cuda_ipc_transport'\n"
+                "page.appendStr('Moduleargs', label='Module Args')\n"
+                "n.par.Moduleargs.val = '--source test --width 512 --height 512'\n"
+                "page.appendPulse('Start', label='Start')\n"
+                "page.appendPulse('Stop', label='Stop')\n"
+                "_result = n.path"
+            ).format(parent=parent, name=COMP_CONTROLLER)
+        },
+
+        # ── B. Text DAT — Extension code ──────────────────────────────────
+        {
+            "code": (
+                "code = {code}\n"
+                "n = op('{controller_path}').create(textDAT, 'process_mgr')\n"
+                "n.text = code\n"
+                "_result = n.path"
+            ).format(
+                code=json.dumps(ext_code),
+                controller_path=controller_path,
+            )
+        },
+
+        # ── C. Wire extension1 to process_mgr DAT ─────────────────────────
+        {
+            "code": (
+                "n = op('{controller_path}')\n"
+                "n.par.extension1 = 'process_mgr'\n"
+                "n.initializeExtensions()\n"
+                "_result = 'extension wired: ' + str(n.par.extension1)"
+            ).format(controller_path=controller_path)
+        },
+
+        # ── D. Par Execute DAT — pulse handler ────────────────────────────
+        {
+            "code": (
+                "code = {code}\n"
+                "n = op('{controller_path}').create(parameterexecuteDAT, 'pulse_handler')\n"
+                "n.text = code\n"
+                "n.par.active = 1\n"
+                "_result = n.path"
+            ).format(
+                code=json.dumps(pulse_code),
+                controller_path=controller_path,
+            )
+        },
+    ]
+
+
 def build_comp_teardown_batch(parent: str) -> list:
     """Removes the bridge COMP (destroying it removes all children)."""
     bridge_path = f"{parent}/{COMP_BRIDGE}"
