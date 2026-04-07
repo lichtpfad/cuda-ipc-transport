@@ -429,6 +429,69 @@ def onCook(scriptOp):
 
 # ── COMP mode batch builders ───────────────────────────────────────────────────
 
+def make_harness_mgr() -> str:
+    """Module-level harness subprocess manager for bridge COMP."""
+    return """import subprocess
+
+_process = None
+
+def start(bridge_op):
+    global _process
+    if _process is not None and _process.poll() is None:
+        debug('[bridge] harness already running PID={}'.format(_process.pid))
+        return
+
+    pkg = bridge_op.par.Pkgpath.eval()
+    prefix = bridge_op.par.Channelprefix.eval()
+    osc_port = str(int(bridge_op.par.Statusoscport.eval()))
+
+    python = pkg.replace(chr(92), '/') + '/.venv/Scripts/python'
+    cmd = [python, '-m', 'cuda_ipc_transport',
+           '--channel-prefix', prefix,
+           '--osc-status-port', osc_port,
+           '--source', 'test',
+           '--width', '512', '--height', '512', '--fps', '30']
+
+    try:
+        _process = subprocess.Popen(cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        debug('[bridge] harness started PID={}'.format(_process.pid))
+    except Exception as e:
+        debug('[bridge] harness start failed: {}'.format(e))
+
+def stop():
+    global _process
+    if _process is None:
+        return
+    if _process.poll() is not None:
+        _process = None
+        return
+    try:
+        _process.terminate()
+        _process.wait(timeout=5)
+        debug('[bridge] harness stopped')
+    except subprocess.TimeoutExpired:
+        _process.kill()
+        debug('[bridge] harness killed')
+    _process = None
+
+def is_running():
+    return _process is not None and _process.poll() is None
+"""
+
+
+def make_harness_pulse() -> str:
+    """Pulse handler for harness Start/Stop on bridge COMP."""
+    return """def onValueChange(par, prev):
+    return
+
+def onPulse(par):
+    if par.name == 'Startharness':
+        mod('harness_mgr').start(parent())
+    elif par.name == 'Stopharness':
+        mod('harness_mgr').stop()
+"""
+
+
 def build_bridge_batch(parent: str, pkg_path: str, prefix: str,
                        osc_port: int, width: int, height: int) -> list:
     """Returns list of h2t batch command dicts to create cuda_ipc_bridge COMP."""
@@ -581,6 +644,46 @@ def build_bridge_batch(parent: str, pkg_path: str, prefix: str,
                 "o.inputConnectors[0].connect(op('{bridge_path}/import_flip'))\n"
                 "_result = o.path"
             ).format(bridge_path=bridge_path)
+        },
+
+        # ── K. Harness Start/Stop params ──────────────────────────────────
+        {
+            "code": (
+                "b = op('{bridge_path}')\n"
+                "page = b.appendCustomPage('Harness')\n"
+                "page.appendPulse('Startharness', label='Start Harness')\n"
+                "page.appendPulse('Stopharness', label='Stop Harness')\n"
+                "_result = 'harness params added'"
+            ).format(bridge_path=bridge_path)
+        },
+
+        # ── L. Harness process manager (textDAT) ─────────────────────────
+        {
+            "code": (
+                "code = {code}\n"
+                "n = op('{bridge_path}').create(textDAT, 'harness_mgr')\n"
+                "n.text = code\n"
+                "_result = n.path"
+            ).format(
+                code=json.dumps(make_harness_mgr()),
+                bridge_path=bridge_path,
+            )
+        },
+
+        # ── M. Harness pulse handler (parexec) ───────────────────────────
+        {
+            "code": (
+                "code = {code}\n"
+                "n = op('{bridge_path}').create(parameterexecuteDAT, 'harness_pulse')\n"
+                "n.text = code\n"
+                "n.par.active = 1\n"
+                "n.par.op = op('{bridge_path}')\n"
+                "n.par.pars = 'Startharness Stopharness'\n"
+                "_result = n.path"
+            ).format(
+                code=json.dumps(make_harness_pulse()),
+                bridge_path=bridge_path,
+            )
         },
     ]
 
