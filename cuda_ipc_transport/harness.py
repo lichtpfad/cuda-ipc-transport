@@ -11,6 +11,38 @@ from .sources.file import FileSource
 from .sources.camera import CameraSource
 
 
+class _OSCStatus:
+    """Lightweight OSC status sender. No-ops gracefully if python-osc not installed."""
+
+    def __init__(self, port: int):
+        self._client = None
+        if port <= 0:
+            return
+        try:
+            from pythonosc.udp_client import SimpleUDPClient
+            self._client = SimpleUDPClient("127.0.0.1", port)
+            print(f"[harness] OSC status -> 127.0.0.1:{port}")
+        except ImportError:
+            print("[harness] WARNING: python-osc not installed. "
+                  "Install with: pip install cuda_ipc_transport[osc]",
+                  file=sys.stderr)
+
+    def connected(self, value: int = 1):
+        if self._client:
+            self._client.send_message("/transport/connected", value)
+
+    def frame(self, n: int):
+        if self._client:
+            self._client.send_message("/transport/frame", n)
+
+    def close(self):
+        if self._client:
+            try:
+                self._client.send_message("/transport/connected", 0)
+            except Exception:
+                pass
+
+
 def _resolve_channel(channel: str, channel_prefix: str = None) -> str:
     """Resolve effective channel name from args.
 
@@ -41,6 +73,8 @@ def main(argv=None):
                         help="Number of frames to send (0 = infinite)")
     parser.add_argument("--file", default=None,
                         help="Path for --source file")
+    parser.add_argument("--osc-status-port", type=int, default=0,
+                        help="UDP port for OSC transport status (0 = disabled)")
     args = parser.parse_args(argv)
 
     if args.channel_prefix and args.channel != "cuda_ipc_test":
@@ -67,6 +101,9 @@ def main(argv=None):
     print(f"[harness] Sending '{args.source}' -> channel '{effective_channel}' at {args.fps} fps")
     print(f"[harness] {args.width}x{args.height} | Press Ctrl+C to stop")
 
+    osc = _OSCStatus(args.osc_status_port)
+    osc.connected(1)
+
     running = [True]
 
     def _stop(sig, frame):
@@ -82,6 +119,7 @@ def main(argv=None):
             frame = source.get_frame()
             sender.send_numpy(frame)
             sent += 1
+            osc.frame(sent)
 
             if sent % 100 == 0:
                 print(f"[harness] sent {sent} frames")
@@ -94,6 +132,7 @@ def main(argv=None):
             if sleep > 0:
                 time.sleep(sleep)
     finally:
+        osc.close()
         sender.close()
         source.close()
         print(f"[harness] Done. Sent {sent} frames.")
