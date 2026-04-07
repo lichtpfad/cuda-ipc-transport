@@ -46,11 +46,11 @@ class _OSCStatus:
 def _resolve_channel(channel: str, channel_prefix: str = None) -> str:
     """Resolve effective channel name from args.
 
-    --channel-prefix takes priority: creates {prefix}_result.
+    --channel-prefix takes priority: creates {prefix}_out_ipc.
     --channel is backward-compatible literal name.
     """
     if channel_prefix:
-        return f"{channel_prefix}_result"
+        return f"{channel_prefix}_out_ipc"
     return channel
 
 
@@ -64,7 +64,7 @@ def main(argv=None):
     parser.add_argument("--channel", default="cuda_ipc_test",
                         help="SharedMemory channel name (default: cuda_ipc_test)")
     parser.add_argument("--channel-prefix", default=None,
-                        help="Channel prefix. Creates {prefix}_result as send channel. "
+                        help="Channel prefix. Creates {prefix}_out_ipc as send channel. "
                              "Overrides --channel when set.")
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=512)
