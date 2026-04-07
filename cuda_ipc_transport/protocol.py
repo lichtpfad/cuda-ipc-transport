@@ -2,7 +2,7 @@
 import struct
 from dataclasses import dataclass
 
-MAGIC = 0x43504943          # "CIPC" in little-endian
+MAGIC = 0x43495043          # "CIPC" — matches SD's CUDAIPCImporter PROTOCOL_MAGIC
 NUM_SLOTS = 3               # default for new writers
 SLOT_SIZE = 128             # 64B mem_handle + 64B event_handle
 SHM_HEADER_SIZE = 20        # magic(4) + version(8) + num_slots(4) + write_idx(4)

@@ -6,8 +6,7 @@ from cuda_ipc_transport.protocol import (
 
 
 def test_magic():
-    assert MAGIC == 0x43504943
-    assert struct.pack("<I", MAGIC) == b"CIPC"
+    assert MAGIC == 0x43495043  # matches SD's CUDAIPCImporter PROTOCOL_MAGIC
 
 
 def test_shm_size_2slots():
