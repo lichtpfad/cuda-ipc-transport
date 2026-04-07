@@ -691,16 +691,12 @@ def build_bridge_batch(parent: str, pkg_path: str, prefix: str,
 # ── Controller COMP code generators ──────────────────────────────────────────
 
 def make_controller_process_mgr(bridge_path: str) -> str:
-    """Generates module-level subprocess management functions.
+    """Generates module-level subprocess management for SD controller.
 
-    Uses module globals instead of TD Extension class (par.ext unreliable via API).
-    Functions are called via mod('process_mgr').start(parent()) from pulse handler.
-
-    Args:
-        bridge_path: absolute TD path to bridge COMP
+    Generates stream_config.json with correct channel names, then launches SD.
     """
     return f"""import subprocess
-import shlex
+import json as _json
 import os as _os
 
 _process = None
@@ -713,12 +709,16 @@ def start(ctrl_op):
         return
 
     venv = ctrl_op.par.Venvpath.eval()
-    module = ctrl_op.par.Module.eval()
-    args_str = ctrl_op.par.Moduleargs.eval()
+    sd_dir = ctrl_op.par.Sddir.eval() if hasattr(ctrl_op.par, 'Sddir') else ''
+    sd_config = ctrl_op.par.Sdconfig.eval() if hasattr(ctrl_op.par, 'Sdconfig') else 'stream_config.json'
 
     bridge = op('{bridge_path}')
     prefix = bridge.par.Channelprefix.eval() if bridge else 'ml'
-    osc_port = str(int(bridge.par.Statusoscport.eval())) if bridge else '7001'
+
+    # Preflight checks
+    if not sd_dir:
+        debug('[sd_controller] ERROR: Sddir parameter is empty')
+        return
 
     if venv:
         python = venv.replace(chr(92), '/') + '/Scripts/python'
@@ -729,15 +729,37 @@ def start(ctrl_op):
         debug('[sd_controller] ERROR: Python not found: ' + python)
         return
 
-    cmd = [python, '-m', module, '--channel-prefix', prefix, '--osc-status-port', osc_port]
-    if args_str:
-        cmd += shlex.split(args_str)
+    base_config_path = _os.path.join(sd_dir, sd_config)
+    if not _os.path.isfile(base_config_path):
+        debug('[sd_controller] ERROR: Config not found: ' + base_config_path)
+        return
+
+    main_script = _os.path.join(sd_dir, 'main_sdtd.py')
+    if not _os.path.isfile(main_script):
+        debug('[sd_controller] ERROR: main_sdtd.py not found: ' + main_script)
+        return
+
+    # Load base config and override channel names
+    with open(base_config_path, 'r') as f:
+        config = _json.load(f)
+
+    config['input_mem_name'] = prefix
+    config['output_mem_name'] = prefix + '_out'
+
+    # Save generated config
+    out_dir = 'C:/dev/cuda/td'
+    _os.makedirs(out_dir, exist_ok=True)
+    gen_config_path = _os.path.join(out_dir, 'sd_config_' + prefix + '.json')
+    with open(gen_config_path, 'w') as f:
+        _json.dump(config, f, indent=2)
+
+    cmd = [python, main_script, '--config', gen_config_path]
 
     try:
         _process = subprocess.Popen(cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-        debug('[sd_controller] started PID={{}}'.format(_process.pid))
+        debug('[sd_controller] SD started PID={{}} config={{}}'.format(_process.pid, gen_config_path))
     except Exception as e:
-        debug('[sd_controller] start failed: {{}}'.format(e))
+        debug('[sd_controller] SD start failed: {{}}'.format(e))
 
 
 def stop():
@@ -802,6 +824,10 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
                 "n.par.Module.val = 'cuda_ipc_transport'\n"
                 "page.appendStr('Moduleargs', label='Module Args')\n"
                 "n.par.Moduleargs.val = '--source test --width 512 --height 512'\n"
+                "page.appendStr('Sddir', label='SD Directory')\n"
+                "n.par.Sddir.val = 'C:/work/stream_alex/StreamDiffusionTD-Custom/StreamDiffusion/StreamDiffusionTD'\n"
+                "page.appendStr('Sdconfig', label='Base Config')\n"
+                "n.par.Sdconfig.val = 'stream_config.json'\n"
                 "page.appendPulse('Start', label='Start')\n"
                 "page.appendPulse('Stop', label='Stop')\n"
                 "_result = n.path"
