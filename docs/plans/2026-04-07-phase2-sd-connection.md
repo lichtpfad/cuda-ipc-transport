@@ -47,6 +47,45 @@ SD code is NOT modified. Only our package adapts.
 
 ---
 
+## Task 0: Audit live TD scene + fix existing bugs
+
+**Source of truth is the live TD project** (`setup.3.toe`). Before changing anything, audit what's actually running.
+
+### Step 0.1: Snapshot live scene state
+
+- [ ] Via h2t: dump all DAT contents, params, connections from live `ml_bridge` COMP. Record as reference.
+
+### Step 0.2: Fix disconnect→close bug in td_setup.py
+
+- [ ] In `make_bridge_importer_callbacks()`: find `_reader.disconnect()` and change to `_reader.close()`. The `CUDAIPCReceiver` class has `close()` (receiver.py:152), not `disconnect()`.
+
+### Step 0.3: Add preflight checks to sd_controller start()
+
+- [ ] In `make_controller_process_mgr()`: add path validation before launching subprocess:
+
+```python
+    if not _os.path.isdir(sd_dir):
+        debug('[sd_controller] ERROR: SD dir not found: ' + sd_dir)
+        return
+    if venv and not _os.path.isfile(python):
+        debug('[sd_controller] ERROR: Python not found: ' + python)
+        return
+    if not _os.path.isfile(base_config_path):
+        debug('[sd_controller] ERROR: Config not found: ' + base_config_path)
+        return
+```
+
+### Step 0.4: Verify and commit
+
+```bash
+cd C:/dev/cuda
+.venv/Scripts/python -m pytest -q
+```
+
+**Commit:** `fix: disconnect→close in importer, add preflight checks to sd_controller`
+
+---
+
 ## Task 1: Update channel naming to match SD convention
 
 **Files:**
@@ -56,16 +95,18 @@ SD code is NOT modified. Only our package adapts.
 
 ### Step 1.1: Update `_resolve_channel` in harness.py
 
-- [ ] Change the return value when prefix is set:
+- [ ] Harness is a **test tool simulating SD output**. It writes to the importer channel (`{prefix}_out_ipc`), NOT the exporter channel (`{prefix}_ipc` which is TD→SD, would conflict):
 
 ```python
 def _resolve_channel(channel: str, channel_prefix: str = None) -> str:
     if channel_prefix:
-        return f"{channel_prefix}_ipc"
+        return f"{channel_prefix}_out_ipc"
     return channel
 ```
 
-Was: `f"{channel_prefix}_result"` → Now: `f"{channel_prefix}_ipc"`
+Was: `f"{channel_prefix}_result"` → Now: `f"{channel_prefix}_out_ipc"`
+
+This means "Start Harness" → writes to `{prefix}_out_ipc` → bridge importer reads it → color bars in import_flip. No conflict with TD→SD exporter channel.
 
 ### Step 1.2: Update tests
 
@@ -73,13 +114,13 @@ Was: `f"{channel_prefix}_result"` → Now: `f"{channel_prefix}_ipc"`
 
 ```python
 def test_prefix_creates_result_channel(self):
-    assert _resolve_channel("cuda_ipc_test", "ml") == "ml_ipc"
+    assert _resolve_channel("cuda_ipc_test", "ml") == "ml_out_ipc"
 
 def test_prefix_overrides_channel(self):
-    assert _resolve_channel("custom_name", "ml") == "ml_ipc"
+    assert _resolve_channel("custom_name", "ml") == "ml_out_ipc"
 
 def test_custom_prefix(self):
-    assert _resolve_channel("x", "sd_v2") == "sd_v2_ipc"
+    assert _resolve_channel("x", "sd_v2") == "sd_v2_out_ipc"
 ```
 
 ### Step 1.3: Update bridge exporter channel suffixes in td_setup.py
@@ -285,8 +326,11 @@ cd C:/dev/cuda
 
 ## Execution Notes
 
-1. **Tasks 1-2 modify code** (sequential: harness first, then td_setup.py).
-2. **Task 3 is live TD work** via h2t daemon — no file changes, just updating running DATs.
-3. **Task 4 is manual verification** — requires TD open, SD venv ready, GPU available.
-4. **SD code is NOT modified** — only our channel naming and config generation adapt to SD's convention.
-5. **TD scene is source of truth** — td_setup.py is backup only.
+1. **Source of truth = live TD project** (`setup.3.toe`). Code must match live scene, not the other way around.
+2. **Task 0 first**: audit live scene, fix existing bugs before any new features.
+3. **Tasks 1-2 modify code** (sequential: harness first, then td_setup.py).
+4. **Task 3 is live TD work** via h2t daemon — sync live scene with code changes.
+5. **Task 4 is manual verification** — requires TD open, SD venv ready, GPU available.
+6. **SD code is NOT modified** — only our channel naming and config generation adapt to SD's convention.
+7. **Preflight checks**: sd_controller must validate paths before launch, error in textport if invalid.
+8. **If conflict between code and live scene** — live scene wins, code adapts.
