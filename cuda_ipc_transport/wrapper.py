@@ -117,7 +117,7 @@ class CUDARuntimeAPI:
         """
         # Try by name first: reuses the DLL handle already loaded by torch
         # (shared CUDA context). Path-first can create a second independent instance.
-        dll_names = ["cudart64_12.dll", "cudart64_11.dll"]
+        dll_names = ["cudart64_13.dll", "cudart64_12.dll", "cudart64_11.dll"]
         for name in dll_names:
             try:
                 return ctypes.CDLL(name)
@@ -129,17 +129,20 @@ class CUDARuntimeAPI:
         import sys
         venv_paths = []
         for p in sys.path:
-            candidate = os.path.join(p, "torch", "lib", "cudart64_12.dll")
-            if os.path.exists(candidate):
-                venv_paths.append(candidate)
-            candidate2 = os.path.join(p, "nvidia", "cuda_runtime", "bin", "cudart64_12.dll")
-            if os.path.exists(candidate2):
-                venv_paths.append(candidate2)
+            for ver in ("13", "12"):
+                dll = f"cudart64_{ver}.dll"
+                candidate = os.path.join(p, "torch", "lib", dll)
+                if os.path.exists(candidate):
+                    venv_paths.append(candidate)
+                candidate2 = os.path.join(p, "nvidia", "cuda_runtime", "bin", dll)
+                if os.path.exists(candidate2):
+                    venv_paths.append(candidate2)
 
         dll_paths = venv_paths + [
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin\x64\cudart64_13.dll",
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\cudart64_12.dll",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\cudart64_12.dll",
-            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\cudart64_12.dll",
         ]
 
@@ -151,7 +154,7 @@ class CUDARuntimeAPI:
                     continue
 
         raise RuntimeError(
-            "Could not load CUDA runtime. Please ensure CUDA 12.x is installed.\n"
+            "Could not load CUDA runtime. Please ensure CUDA 11.x-13.x is installed.\n"
             f"Tried names: {dll_names}\n"
             f"Tried paths: {dll_paths}"
         )

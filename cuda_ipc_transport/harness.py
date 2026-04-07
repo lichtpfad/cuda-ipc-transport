@@ -46,7 +46,7 @@ def main(argv=None):
         print("ERROR: sender.initialize() failed — is CUDA available?", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[harness] Sending '{args.source}' → channel '{args.channel}' at {args.fps} fps")
+    print(f"[harness] Sending '{args.source}' -> channel '{args.channel}' at {args.fps} fps")
     print(f"[harness] {args.width}x{args.height} | Press Ctrl+C to stop")
 
     running = [True]
