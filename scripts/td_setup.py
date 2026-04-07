@@ -587,87 +587,85 @@ def build_bridge_batch(parent: str, pkg_path: str, prefix: str,
 
 # ── Controller COMP code generators ──────────────────────────────────────────
 
-def make_controller_extension(bridge_path: str) -> str:
-    """Generates SDControllerExt TD Extension class as a Python string.
+def make_controller_process_mgr(bridge_path: str) -> str:
+    """Generates module-level subprocess management functions.
+
+    Uses module globals instead of TD Extension class (par.ext unreliable via API).
+    Functions are called via mod('process_mgr').start(parent()) from pulse handler.
 
     Args:
-        bridge_path: absolute TD path to bridge COMP (e.g. '/project1/cuda_ipc_bridge')
+        bridge_path: absolute TD path to bridge COMP
     """
     return f"""import subprocess
 import shlex
 
-class SDControllerExt:
-    def __init__(self, ownerComp):
-        self.ownerComp = ownerComp
-        self._process = None
+_process = None
 
-    def Start(self):
-        if self._process is not None and self._process.poll() is None:
-            debug('[sd_controller] already running (PID={{}})'.format(self._process.pid))
-            return
 
-        venv = self.ownerComp.par.Venvpath.eval()
-        module = self.ownerComp.par.Module.eval()
-        args_str = self.ownerComp.par.Moduleargs.eval()
+def start(ctrl_op):
+    global _process
+    if _process is not None and _process.poll() is None:
+        debug('[sd_controller] already running PID={{}}'.format(_process.pid))
+        return
 
-        # Get prefix and osc port from bridge
-        bridge = op('{bridge_path}')
-        prefix = bridge.par.Channelprefix.eval() if bridge else 'ml'
-        osc_port = str(int(bridge.par.Statusoscport.eval())) if bridge else '7001'
+    venv = ctrl_op.par.Venvpath.eval()
+    module = ctrl_op.par.Module.eval()
+    args_str = ctrl_op.par.Moduleargs.eval()
 
-        if venv:
-            python = venv.replace('\\\\\\\\', '/') + '/Scripts/python'
-        else:
-            python = 'python'
+    bridge = op('{bridge_path}')
+    prefix = bridge.par.Channelprefix.eval() if bridge else 'ml'
+    osc_port = str(int(bridge.par.Statusoscport.eval())) if bridge else '7001'
 
-        cmd = [python, '-m', module, '--channel-prefix', prefix, '--osc-status-port', osc_port]
-        if args_str:
-            cmd += shlex.split(args_str)
+    if venv:
+        python = venv.replace(chr(92), '/') + '/Scripts/python'
+    else:
+        python = 'python'
 
-        try:
-            import sys as _sys
-            self._process = subprocess.Popen(
-                cmd,
-                shell=False,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                stdout=_sys.stdout,
-                stderr=_sys.stderr,
-            )
-            debug('[sd_controller] started PID={{}} cmd={{}}'.format(self._process.pid, ' '.join(cmd)))
-        except Exception as e:
-            debug('[sd_controller] start failed: {{}}'.format(e))
+    cmd = [python, '-m', module, '--channel-prefix', prefix, '--osc-status-port', osc_port]
+    if args_str:
+        cmd += shlex.split(args_str)
 
-    def Stop(self):
-        if self._process is None:
-            return
-        if self._process.poll() is not None:
-            debug('[sd_controller] process already exited: {{}}'.format(self._process.returncode))
-            self._process = None
-            return
-        try:
-            self._process.terminate()
-            self._process.wait(timeout=5)
-            debug('[sd_controller] stopped (exit={{}})'.format(self._process.returncode))
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-            debug('[sd_controller] killed (timeout)')
-        self._process = None
+    try:
+        _process = subprocess.Popen(cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        debug('[sd_controller] started PID={{}}'.format(_process.pid))
+    except Exception as e:
+        debug('[sd_controller] start failed: {{}}'.format(e))
 
-    def IsRunning(self):
-        return self._process is not None and self._process.poll() is None
 
-    def Destroy(self):
-        self.Stop()
+def stop():
+    global _process
+    if _process is None:
+        return
+    if _process.poll() is not None:
+        debug('[sd_controller] already exited: {{}}'.format(_process.returncode))
+        _process = None
+        return
+    try:
+        _process.terminate()
+        _process.wait(timeout=5)
+        debug('[sd_controller] stopped (exit={{}})'.format(_process.returncode))
+    except subprocess.TimeoutExpired:
+        _process.kill()
+        debug('[sd_controller] killed (timeout)')
+    _process = None
+
+
+def is_running():
+    return _process is not None and _process.poll() is None
 """
 
 
 def make_controller_pulse_code() -> str:
-    """Generates Par Execute DAT code for Start/Stop pulse handling."""
+    """Generates Par Execute DAT code for Start/Stop pulse handling.
+
+    Uses mod('process_mgr') instead of ext.SDControllerExt (Extension system
+    unreliable when set up via Python API in TD 2025).
+    """
     return """def onValueChange(par, prev):
     if par.name == 'Start':
-        par.owner.ext.SDControllerExt.Start()
+        mod('process_mgr').start(parent())
     elif par.name == 'Stop':
-        par.owner.ext.SDControllerExt.Stop()
+        mod('process_mgr').stop()
 """
 
 
@@ -679,7 +677,7 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
         bridge_path: TD path to cuda_ipc_bridge COMP (for prefix/port reads)
     """
     controller_path = f"{parent}/{COMP_CONTROLLER}"
-    ext_code = make_controller_extension(bridge_path)
+    mgr_code = make_controller_process_mgr(bridge_path)
     pulse_code = make_controller_pulse_code()
 
     return [
@@ -699,7 +697,7 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
             ).format(parent=parent, name=COMP_CONTROLLER)
         },
 
-        # ── B. Text DAT — Extension code ──────────────────────────────────
+        # ── B. Text DAT — process manager (module-level functions) ────────
         {
             "code": (
                 "code = {code}\n"
@@ -707,22 +705,12 @@ def build_controller_batch(parent: str, bridge_path: str) -> list:
                 "n.text = code\n"
                 "_result = n.path"
             ).format(
-                code=json.dumps(ext_code),
+                code=json.dumps(mgr_code),
                 controller_path=controller_path,
             )
         },
 
-        # ── C. Wire extension1 to process_mgr DAT ─────────────────────────
-        {
-            "code": (
-                "n = op('{controller_path}')\n"
-                "n.par.extension1 = 'process_mgr'\n"
-                "n.initializeExtensions()\n"
-                "_result = 'extension wired: ' + str(n.par.extension1)"
-            ).format(controller_path=controller_path)
-        },
-
-        # ── D. Par Execute DAT — pulse handler ────────────────────────────
+        # ── C. Par Execute DAT — pulse handler ────────────────────────────
         {
             "code": (
                 "code = {code}\n"
