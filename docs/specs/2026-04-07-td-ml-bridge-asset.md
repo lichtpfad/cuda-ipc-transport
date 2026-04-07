@@ -212,6 +212,9 @@ Facade params связаны с внутренними через `op('cuda_ipc_
 - Production hardening: auto-reconnect, error display, multiple instances
 - Custom UI panel
 
+### Backlog
+- **Server mode**: обернуть SD процессор в persistent server (HTTP/gRPC). Модель загружается один раз, команды приходят по API. Несколько клиентов. OSC остаётся для realtime control, server API — для lifecycle management (load model, switch checkpoint, health check).
+
 ---
 
 ## Success Criteria Phase 1
