@@ -264,7 +264,7 @@ def make_bridge_exporter_code(bridge_path: str, input_name: str,
         channel_suffix: suffix after prefix (e.g. 'img' -> {prefix}_img)
         pkg_path: path to cuda_ipc_transport package
     """
-    return f"""# Execute DAT -- Exporter: {input_name} -> {{prefix}}_{channel_suffix}
+    return f"""# Execute DAT -- Exporter: {input_name} -> {{prefix}}{channel_suffix}
 import sys
 if '{pkg_path}' not in sys.path:
     sys.path.insert(0, '{pkg_path}')
@@ -277,7 +277,7 @@ def onFrameStart(frame):
     global _exporter, _last_channel
     try:
         prefix = parent().par.Channelprefix.eval()
-        channel = prefix + '_{channel_suffix}'
+        channel = prefix + '{channel_suffix}'
 
         if _exporter is None or channel != _last_channel:
             from cuda_ipc_transport.td.exporter import TDCUDAIPCExporter
@@ -364,14 +364,14 @@ def onCook(scriptOp):
 
     try:
         prefix = op('{bridge_path}').par.Channelprefix.eval()
-        channel = prefix + '_result'
+        channel = prefix + '_out_ipc'
     except Exception:
-        channel = 'ml_result'
+        channel = 'ml_out_ipc'
 
     if _reader is None or channel != _last_channel:
         if _reader is not None:
             try:
-                _reader.disconnect()
+                _reader.close()
             except Exception:
                 pass
         _reader = CUDAIPCReceiver(channel)
@@ -498,8 +498,8 @@ def build_bridge_batch(parent: str, pkg_path: str, prefix: str,
 
     bridge_path = f"{parent}/{COMP_BRIDGE}"
 
-    exporter_img_code   = make_bridge_exporter_code(bridge_path, "in_image", "img", pkg_path)
-    exporter_depth_code = make_bridge_exporter_code(bridge_path, "in_depth", "depth", pkg_path)
+    exporter_img_code   = make_bridge_exporter_code(bridge_path, "in_image", "_ipc", pkg_path)
+    exporter_depth_code = make_bridge_exporter_code(bridge_path, "in_depth", "-cn_ipc", pkg_path)
     importer_cb_code    = make_bridge_importer_callbacks(bridge_path, pkg_path)
 
     cooker_code = "\n".join([
@@ -701,6 +701,7 @@ def make_controller_process_mgr(bridge_path: str) -> str:
     """
     return f"""import subprocess
 import shlex
+import os as _os
 
 _process = None
 
@@ -723,6 +724,10 @@ def start(ctrl_op):
         python = venv.replace(chr(92), '/') + '/Scripts/python'
     else:
         python = 'python'
+
+    if venv and not _os.path.isfile(python):
+        debug('[sd_controller] ERROR: Python not found: ' + python)
+        return
 
     cmd = [python, '-m', module, '--channel-prefix', prefix, '--osc-status-port', osc_port]
     if args_str:
