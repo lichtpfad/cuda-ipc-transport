@@ -31,9 +31,9 @@ ml_bridge (outer COMP, facade)
 │   └── cooker, flip, out_result
 │
 └── sd_controller (COMP) — SD process + parameter control
-    ├── OSC In DAT: port 7187 ← SD telemetry
-    │   → CHOP channels: sd/fps, sd/frame_ready, sd/server_active, sd/pipeline_fps
-    ├── OSC Out DAT: port 6503 → SD commands
+    ├── OSC In CHOP: port 6503 ← SD telemetry (SD transmits on osc_in_port)
+    │   → channels: stream-info/fps, frame_ready, server_active, pipeline_fps, framecount
+    ├── OSC Out DAT: port 7187 → SD commands (SD listens on osc_out_port)
     ├── Custom Parameters (UI):
     │   [Launch] Start (Pulse), Stop (Pulse), Clean Cache (Pulse)
     │   [Launch] Venvpath, Sddir, Modelsdir, Model (Menu), Acceleration (Menu), Tensorrtvae (Toggle)
