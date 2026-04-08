@@ -41,12 +41,16 @@ class CUDAIPCReceiver:
             self._shm = SharedMemory(name=self.channel_name, create=False)
             self._buf = self._shm.buf
         except FileNotFoundError:
+            print(f"[CUDAIPCReceiver] SharedMemory '{self.channel_name}' not found")
+            return False
+        except Exception as e:
+            print(f"[CUDAIPCReceiver] SharedMemory open error: {e}")
             return False
 
         # Validate magic
         magic = struct.unpack_from("<I", self._buf, 0)[0]
         if magic != MAGIC:
-            print(f"[CUDAIPCReceiver] Bad magic: 0x{magic:08X}")
+            print(f"[CUDAIPCReceiver] Bad magic: 0x{magic:08X} (expected 0x{MAGIC:08X})")
             self._close_shm()
             return False
 
@@ -88,8 +92,9 @@ class CUDAIPCReceiver:
             try:
                 ptr = self._cuda.ipc_open_mem_handle(mem_handle)
                 self._opened_ptrs[slot] = ptr
-            except RuntimeError as e:
-                print(f"[CUDAIPCReceiver] slot {slot} open failed: {e}")
+            except Exception as e:
+                print(f"[CUDAIPCReceiver] slot {slot} open failed: {type(e).__name__}: {e}")
+                self._last_ipc_error = str(e)
 
     def _close_ipc_handles(self):
         if self._cuda:
